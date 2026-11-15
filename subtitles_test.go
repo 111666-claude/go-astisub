@@ -2,6 +2,8 @@ package astisub_test
 
 import (
 	"bytes"
+	"io"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -302,6 +304,160 @@ func TestSubtitles_ApplyLinearCorrection(t *testing.T) {
 	require.Equal(t, 8*time.Second, s.Items[1].EndAt)
 	require.Equal(t, 11*time.Second, s.Items[2].StartAt)
 	require.Equal(t, 15500*time.Millisecond, s.Items[2].EndAt)
+}
+
+func TestSubtitles_ApplyAnchoredCorrection(t *testing.T) {
+	// Anchors describing 3 segments with different drifts:
+	//   [0s, 100s]   -> [0s, 100s]   (no drift)
+	//   [100s, 200s] -> [100s, 150s] (slope 0.5)
+	//   [200s, 300s] -> [150s, 225s] (slope 0.75)
+	var anchors = []astisub.TimeAnchor{
+		{Source: 0, Target: 0},
+		{Source: 100 * time.Second, Target: 100 * time.Second},
+		{Source: 200 * time.Second, Target: 150 * time.Second},
+		{Source: 300 * time.Second, Target: 225 * time.Second},
+	}
+	var s = &astisub.Subtitles{
+		Items: []*astisub.Item{
+			// Fully inside the first segment
+			{StartAt: 10 * time.Second, EndAt: 20 * time.Second, Lines: []astisub.Line{{Items: []astisub.LineItem{{Text: "1"}}}}},
+			// Exactly on anchors
+			{StartAt: 100 * time.Second, EndAt: 200 * time.Second, Lines: []astisub.Line{{Items: []astisub.LineItem{{Text: "4"}}}}},
+			// Spanning the anchor at 200s
+			{StartAt: 150 * time.Second, EndAt: 250 * time.Second, Lines: []astisub.Line{{Items: []astisub.LineItem{{Text: "2"}}}}},
+			// Overlapping the previous item
+			{StartAt: 160 * time.Second, EndAt: 170 * time.Second, Lines: []astisub.Line{{Items: []astisub.LineItem{{Text: "3"}}}}},
+			// After the last anchor, extrapolated
+			{StartAt: 400 * time.Second, EndAt: 410 * time.Second, Lines: []astisub.Line{{Items: []astisub.LineItem{{Text: "5"}}}}},
+		},
+		Metadata: &astisub.Metadata{Comments: []string{"comment"}},
+	}
+	n, err := s.ApplyAnchoredCorrection(anchors)
+	require.NoError(t, err)
+
+	// Mapped times
+	require.Len(t, n.Items, 5)
+	require.Equal(t, 10*time.Second, n.Items[0].StartAt)
+	require.Equal(t, 20*time.Second, n.Items[0].EndAt)
+	require.Equal(t, 100*time.Second, n.Items[1].StartAt)
+	require.Equal(t, 150*time.Second, n.Items[1].EndAt)
+	require.Equal(t, 125*time.Second, n.Items[2].StartAt)
+	require.Equal(t, 187500*time.Millisecond, n.Items[2].EndAt)
+	require.Equal(t, 130*time.Second, n.Items[3].StartAt)
+	require.Equal(t, 135*time.Second, n.Items[3].EndAt)
+	require.Equal(t, 300*time.Second, n.Items[4].StartAt)
+	require.Equal(t, 307500*time.Millisecond, n.Items[4].EndAt)
+
+	// Order is preserved
+	for idx := 1; idx < len(n.Items); idx++ {
+		require.True(t, n.Items[idx].StartAt >= n.Items[idx-1].StartAt)
+	}
+
+	// Text and metadata are kept
+	require.Equal(t, "2", n.Items[2].Lines[0].String())
+	require.NotNil(t, n.Metadata)
+	require.Equal(t, []string{"comment"}, n.Metadata.Comments)
+
+	// The original is left unmodified
+	require.Equal(t, 150*time.Second, s.Items[2].StartAt)
+	require.Equal(t, 250*time.Second, s.Items[2].EndAt)
+	require.Equal(t, 400*time.Second, s.Items[4].StartAt)
+}
+
+func TestSubtitles_ApplyAnchoredCorrection_Errors(t *testing.T) {
+	var item = &astisub.Item{StartAt: time.Second, EndAt: 2 * time.Second}
+	var s = &astisub.Subtitles{Items: []*astisub.Item{item}}
+
+	// Not enough anchors
+	for _, anchors := range [][]astisub.TimeAnchor{
+		{},
+		{{Source: 0, Target: 0}},
+	} {
+		_, err := s.ApplyAnchoredCorrection(anchors)
+		require.Error(t, err)
+	}
+
+	// Sources not strictly increasing
+	_, err := s.ApplyAnchoredCorrection([]astisub.TimeAnchor{
+		{Source: 0, Target: 0},
+		{Source: 10 * time.Second, Target: 10 * time.Second},
+		{Source: 10 * time.Second, Target: 20 * time.Second},
+	})
+	require.Error(t, err)
+
+	// Targets not strictly increasing
+	_, err = s.ApplyAnchoredCorrection([]astisub.TimeAnchor{
+		{Source: 0, Target: 0},
+		{Source: 10 * time.Second, Target: 10 * time.Second},
+		{Source: 20 * time.Second, Target: 10 * time.Second},
+	})
+	require.Error(t, err)
+
+	// Mapped to a negative time
+	_, err = s.ApplyAnchoredCorrection([]astisub.TimeAnchor{
+		{Source: 10 * time.Second, Target: 0},
+		{Source: 20 * time.Second, Target: time.Second},
+	})
+	require.Error(t, err)
+
+	// Mapped to a time that overflows
+	_, err = s.ApplyAnchoredCorrection([]astisub.TimeAnchor{
+		{Source: 0, Target: 0},
+		{Source: time.Second, Target: time.Duration(math.MaxInt64) / 2},
+	})
+	require.Error(t, err)
+
+	// End mapped before start
+	_, err = (&astisub.Subtitles{Items: []*astisub.Item{{StartAt: 2 * time.Second, EndAt: time.Second}}}).ApplyAnchoredCorrection([]astisub.TimeAnchor{
+		{Source: 0, Target: 0},
+		{Source: 10 * time.Second, Target: 10 * time.Second},
+	})
+	require.Error(t, err)
+}
+
+func TestSubtitles_ApplyAnchoredCorrection_RoundTrip(t *testing.T) {
+	var anchors = []astisub.TimeAnchor{
+		{Source: 0, Target: 0},
+		{Source: 100 * time.Second, Target: 100 * time.Second},
+		{Source: 200 * time.Second, Target: 150 * time.Second},
+	}
+	var s = &astisub.Subtitles{Items: []*astisub.Item{
+		{
+			StartAt: 120 * time.Second,
+			EndAt:   130 * time.Second,
+			Lines: []astisub.Line{{Items: []astisub.LineItem{
+				{Text: "first"},
+				{StartAt: 125 * time.Second, Text: "second"},
+			}}},
+		},
+	}}
+	n, err := s.ApplyAnchoredCorrection(anchors)
+	require.NoError(t, err)
+	require.Equal(t, 110*time.Second, n.Items[0].StartAt)
+	require.Equal(t, 115*time.Second, n.Items[0].EndAt)
+	require.Equal(t, 112500*time.Millisecond, n.Items[0].Lines[0].Items[1].StartAt)
+
+	// The original line items are left unmodified
+	require.Equal(t, 125*time.Second, s.Items[0].Lines[0].Items[1].StartAt)
+
+	// Times are consistent after writing and reading back
+	for _, e := range []struct {
+		ext   string
+		read  func(r io.Reader) (*astisub.Subtitles, error)
+		write func(s *astisub.Subtitles, w io.Writer) error
+	}{
+		{ext: "srt", read: astisub.ReadFromSRT, write: func(s *astisub.Subtitles, w io.Writer) error { return s.WriteToSRT(w) }},
+		{ext: "vtt", read: astisub.ReadFromWebVTT, write: func(s *astisub.Subtitles, w io.Writer) error { return s.WriteToWebVTT(w) }},
+	} {
+		var b = &bytes.Buffer{}
+		require.NoError(t, e.write(n, b), e.ext)
+		r, err := e.read(b)
+		require.NoError(t, err, e.ext)
+		require.Len(t, r.Items, 1, e.ext)
+		require.Equal(t, n.Items[0].StartAt, r.Items[0].StartAt, e.ext)
+		require.Equal(t, n.Items[0].EndAt, r.Items[0].EndAt, e.ext)
+		require.Equal(t, "firstsecond", r.Items[0].Lines[0].String(), e.ext)
+	}
 }
 
 func TestHTMLEntity(t *testing.T) {

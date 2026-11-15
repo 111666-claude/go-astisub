@@ -1118,6 +1118,131 @@ func (s *Subtitles) ApplyLinearCorrection(actual1, desired1, actual2, desired2 t
 	}
 }
 
+// TimeAnchor maps an original timestamp (Source) to the timestamp it should
+// have after correction (Target).
+type TimeAnchor struct {
+	Source time.Duration
+	Target time.Duration
+}
+
+// ApplyAnchoredCorrection applies a piecewise linear time correction defined
+// by the given anchors and returns the corrected subtitles as a new object.
+// The original subtitles are left unmodified.
+//
+// Between two consecutive anchors times are mapped linearly, so that the
+// mapping is continuous at anchors and preserves the order of items. Times
+// before the first anchor or after the last one are extrapolated from the
+// nearest segment. An item spanning an anchor has its start and end mapped
+// through their respective segments.
+//
+// At least 2 anchors must be provided and both sources and targets must be
+// strictly increasing. An error is returned if a mapped time would be
+// negative, would overflow a time.Duration, or if an item's end would be
+// mapped before its start.
+func (s *Subtitles) ApplyAnchoredCorrection(anchors []TimeAnchor) (*Subtitles, error) {
+	// Validate anchors
+	if len(anchors) < 2 {
+		return nil, fmt.Errorf("astisub: at least 2 time anchors are required, got %d", len(anchors))
+	}
+	for idx := 1; idx < len(anchors); idx++ {
+		if anchors[idx].Source <= anchors[idx-1].Source {
+			return nil, fmt.Errorf("astisub: time anchor sources must be strictly increasing, but anchor #%d source %s is not greater than anchor #%d source %s", idx+1, anchors[idx].Source, idx, anchors[idx-1].Source)
+		}
+		if anchors[idx].Target <= anchors[idx-1].Target {
+			return nil, fmt.Errorf("astisub: time anchor targets must be strictly increasing, but anchor #%d target %s is not greater than anchor #%d target %s", idx+1, anchors[idx].Target, idx, anchors[idx-1].Target)
+		}
+	}
+
+	// Create new subtitles
+	n := &Subtitles{
+		Regions: make(map[string]*Region, len(s.Regions)),
+		Styles:  make(map[string]*Style, len(s.Styles)),
+	}
+	if s.Metadata != nil {
+		var m = *s.Metadata
+		n.Metadata = &m
+	}
+	for k, v := range s.Regions {
+		n.Regions[k] = v
+	}
+	for k, v := range s.Styles {
+		n.Styles[k] = v
+	}
+
+	// Loop through items
+	for _, i := range s.Items {
+		// Map boundaries
+		var err error
+		var startAt, endAt time.Duration
+		if startAt, err = anchoredTime(anchors, i.StartAt); err != nil {
+			return nil, fmt.Errorf("astisub: mapping item start at %s failed: %w", i.StartAt, err)
+		}
+		if endAt, err = anchoredTime(anchors, i.EndAt); err != nil {
+			return nil, fmt.Errorf("astisub: mapping item end at %s failed: %w", i.EndAt, err)
+		}
+		if endAt < startAt {
+			return nil, fmt.Errorf("astisub: item between %s and %s would end at %s before it starts at %s", i.StartAt, i.EndAt, endAt, startAt)
+		}
+
+		// Copy item so that the original is left unmodified
+		var ni = new(Item)
+		*ni = *i
+		ni.StartAt = startAt
+		ni.EndAt = endAt
+
+		// Copy lines and items so that line item timestamps can be mapped
+		// without altering the original
+		ni.Lines = make([]Line, len(i.Lines))
+		for lidx, l := range i.Lines {
+			nl := Line{
+				Items:     make([]LineItem, len(l.Items)),
+				VoiceName: l.VoiceName,
+			}
+			for iidx, li := range l.Items {
+				nl.Items[iidx] = li
+				if li.StartAt > 0 {
+					if nl.Items[iidx].StartAt, err = anchoredTime(anchors, li.StartAt); err != nil {
+						return nil, fmt.Errorf("astisub: mapping line item start at %s failed: %w", li.StartAt, err)
+					}
+				}
+			}
+			ni.Lines[lidx] = nl
+		}
+		n.Items = append(n.Items, ni)
+	}
+	return n, nil
+}
+
+// anchoredTime maps a time through the piecewise linear function defined by
+// the anchors. Anchors must have been validated beforehand.
+func anchoredTime(anchors []TimeAnchor, t time.Duration) (time.Duration, error) {
+	// Find the segment to use, extrapolating from the nearest segment when the
+	// time is outside the anchors range
+	var lo, hi int
+	switch {
+	case t <= anchors[0].Source:
+		lo, hi = 0, 1
+	case t >= anchors[len(anchors)-1].Source:
+		lo, hi = len(anchors)-2, len(anchors)-1
+	default:
+		hi = sort.Search(len(anchors), func(i int) bool { return anchors[i].Source > t })
+		lo = hi - 1
+	}
+
+	// Interpolate linearly within the segment
+	a, b := anchors[lo], anchors[hi]
+	f := float64(a.Target) + float64(t-a.Source)*float64(b.Target-a.Target)/float64(b.Source-a.Source)
+
+	// Make sure the mapped time is valid
+	if f < 0 {
+		return 0, fmt.Errorf("astisub: time is mapped to a negative time")
+	}
+	if f >= float64(math.MaxInt64) {
+		return 0, fmt.Errorf("astisub: time is mapped to a time that overflows a time.Duration")
+	}
+	return time.Duration(f), nil
+}
+
 // Write writes subtitles to a file
 func (s Subtitles) Write(dst string) (err error) {
 	// Create the file
