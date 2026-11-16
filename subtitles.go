@@ -850,6 +850,10 @@ type LineItem struct {
 	StartAt     time.Duration
 	Style       *Style
 	Text        string
+	// VoiceName is the speaker of this specific item when a line holds
+	// several voice spans (e.g. WebVTT <v> tags). Line.VoiceName keeps
+	// the line's first speaker for backward compatibility.
+	VoiceName string
 }
 
 // Add adds a duration to each time boundaries. As in the time package, duration can be negative.

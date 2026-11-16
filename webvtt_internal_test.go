@@ -66,6 +66,90 @@ func TestParseTextWebVTT(t *testing.T) {
 		assert.Equal(t, "With end timestamp", s.Items[0].Text)
 		assert.Equal(t, time.Duration(0), s.Items[0].StartAt)
 	})
+
+	t.Run("When two voices appear in the same line", func(t *testing.T) {
+		testData := `<v Alice>Hello,</v> <v Bob>hi!</v>`
+
+		s := parseTextWebVTT(testData, &StyleAttributes{})
+		assert.Equal(t, "Alice", s.VoiceName)
+		require.Len(t, s.Items, 3)
+		assert.Equal(t, "Hello,", s.Items[0].Text)
+		assert.Equal(t, "Alice", s.Items[0].VoiceName)
+		assert.Equal(t, " ", s.Items[1].Text)
+		assert.Equal(t, "", s.Items[1].VoiceName)
+		assert.Equal(t, "hi!", s.Items[2].Text)
+		assert.Equal(t, "Bob", s.Items[2].VoiceName)
+	})
+
+	t.Run("When the voice switches three times", func(t *testing.T) {
+		testData := `<v Alice>one</v><v Bob>two</v><v Alice>three</v>`
+
+		s := parseTextWebVTT(testData, &StyleAttributes{})
+		require.Len(t, s.Items, 3)
+		assert.Equal(t, "Alice", s.Items[0].VoiceName)
+		assert.Equal(t, "Bob", s.Items[1].VoiceName)
+		assert.Equal(t, "Alice", s.Items[2].VoiceName)
+	})
+
+	t.Run("When voice tags are nested", func(t *testing.T) {
+		testData := `<v Alice>a<v Bob>b</v>c</v>`
+
+		s := parseTextWebVTT(testData, &StyleAttributes{})
+		require.Len(t, s.Items, 3)
+		assert.Equal(t, "a", s.Items[0].Text)
+		assert.Equal(t, "Alice", s.Items[0].VoiceName)
+		assert.Equal(t, "b", s.Items[1].Text)
+		assert.Equal(t, "Bob", s.Items[1].VoiceName)
+		assert.Equal(t, "c", s.Items[2].Text)
+		assert.Equal(t, "Alice", s.Items[2].VoiceName)
+	})
+
+	t.Run("When a voice tag is not closed before the next one", func(t *testing.T) {
+		testData := `<v Alice>a<v Bob>b`
+
+		s := parseTextWebVTT(testData, &StyleAttributes{})
+		require.Len(t, s.Items, 2)
+		assert.Equal(t, "Alice", s.Items[0].VoiceName)
+		assert.Equal(t, "Bob", s.Items[1].VoiceName)
+	})
+
+	t.Run("When the speaker is empty", func(t *testing.T) {
+		testData := `<v Alice>a</v><v>b</v>`
+
+		s := parseTextWebVTT(testData, &StyleAttributes{})
+		require.Len(t, s.Items, 2)
+		assert.Equal(t, "Alice", s.Items[0].VoiceName)
+		// The text of an empty speaker is attributed to no one, not to Alice
+		assert.Equal(t, "b", s.Items[1].Text)
+		assert.Equal(t, "", s.Items[1].VoiceName)
+	})
+
+	t.Run("When voices are mixed with inline styles and plain text", func(t *testing.T) {
+		testData := `<v Alice><i>Hello</i></v> plain <v Bob>hi</v>`
+
+		s := parseTextWebVTT(testData, &StyleAttributes{})
+		require.Len(t, s.Items, 3)
+		assert.Equal(t, "Hello", s.Items[0].Text)
+		assert.Equal(t, "Alice", s.Items[0].VoiceName)
+		require.NotNil(t, s.Items[0].InlineStyle)
+		require.Len(t, s.Items[0].InlineStyle.WebVTTTags, 1)
+		assert.Equal(t, "i", s.Items[0].InlineStyle.WebVTTTags[0].Name)
+		assert.Equal(t, " plain ", s.Items[1].Text)
+		assert.Equal(t, "", s.Items[1].VoiceName)
+		assert.Nil(t, s.Items[1].InlineStyle)
+		assert.Equal(t, "hi", s.Items[2].Text)
+		assert.Equal(t, "Bob", s.Items[2].VoiceName)
+	})
+
+	t.Run("When the text contains invalid escapes", func(t *testing.T) {
+		testData := `<v Alice>a &invalid; & b</v>`
+
+		s := parseTextWebVTT(testData, &StyleAttributes{})
+		require.Len(t, s.Items, 1)
+		// Invalid entities are kept as is instead of being dropped
+		assert.Equal(t, "a &invalid; & b", s.Items[0].Text)
+		assert.Equal(t, "Alice", s.Items[0].VoiceName)
+	})
 }
 
 func TestTimestampMap(t *testing.T) {
@@ -186,4 +270,34 @@ func TestLineWebVTTBytes(t *testing.T) {
 			Text: " 3",
 		},
 	}}.webVTTBytes()))
+}
+
+func TestLineWebVTTBytesWithVoices(t *testing.T) {
+	// A single voice keeps the historical output: one opening tag, no closing tag
+	require.Equal(t, "<v Alice>1 2\n", string(Line{
+		VoiceName: "Alice",
+		Items: []LineItem{
+			{Text: "1 ", VoiceName: "Alice"},
+			{Text: "2", VoiceName: "Alice"},
+		},
+	}.webVTTBytes()))
+
+	// Multiple voices are written as ordered <v> spans, inline styles are
+	// closed and reopened across voice boundaries instead of overlapping them
+	require.Equal(t, "<v Alice><i>1</i></v> 2 <v Bob><i>3</i></v>\n", string(Line{
+		VoiceName: "Alice",
+		Items: []LineItem{
+			{
+				InlineStyle: &StyleAttributes{WebVTTTags: []WebVTTTag{{Name: "i"}}},
+				Text:        "1",
+				VoiceName:   "Alice",
+			},
+			{Text: " 2 "},
+			{
+				InlineStyle: &StyleAttributes{WebVTTTags: []WebVTTTag{{Name: "i"}}},
+				Text:        "3",
+				VoiceName:   "Bob",
+			},
+		},
+	}.webVTTBytes()))
 }

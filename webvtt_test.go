@@ -118,6 +118,74 @@ NOTE this a example with voicename
 `, b.String())
 }
 
+func TestWebVTTWithMultipleVoiceNames(t *testing.T) {
+	testData := `WEBVTT
+
+1
+00:00:01.000 --> 00:00:04.000
+<v Alice>Hello,</v> <v Bob>hi!</v> <v Alice>how are you?</v>
+
+2
+00:00:05.000 --> 00:00:08.000
+<v Alice><i>italic words</i></v> plain text <v Bob><c.yellow>colored</c></v>
+`
+	s, err := astisub.ReadFromWebVTT(strings.NewReader(testData))
+	require.NoError(t, err)
+	require.Len(t, s.Items, 2)
+
+	// Each voice span is mapped to its own line items, in order
+	require.Len(t, s.Items[0].Lines, 1)
+	require.Equal(t, "Alice", s.Items[0].Lines[0].VoiceName)
+	var items []astisub.LineItem
+	for _, l := range s.Items[0].Lines {
+		items = append(items, l.Items...)
+	}
+	require.Len(t, items, 5)
+	assert.Equal(t, "Hello,", items[0].Text)
+	assert.Equal(t, "Alice", items[0].VoiceName)
+	assert.Equal(t, " ", items[1].Text)
+	assert.Equal(t, "", items[1].VoiceName)
+	assert.Equal(t, "hi!", items[2].Text)
+	assert.Equal(t, "Bob", items[2].VoiceName)
+	assert.Equal(t, " ", items[3].Text)
+	assert.Equal(t, "", items[3].VoiceName)
+	assert.Equal(t, "how are you?", items[4].Text)
+	assert.Equal(t, "Alice", items[4].VoiceName)
+
+	// Cue times are preserved
+	assert.Equal(t, time.Second, s.Items[0].StartAt)
+	assert.Equal(t, 4*time.Second, s.Items[0].EndAt)
+
+	// Voice spans are written back in order, inline styles and plain text preserved
+	b := &bytes.Buffer{}
+	err = s.WriteToWebVTT(b)
+	require.NoError(t, err)
+	assert.Equal(t, `WEBVTT
+
+1
+00:00:01.000 --> 00:00:04.000
+<v Alice>Hello,</v> <v Bob>hi!</v> <v Alice>how are you?</v>
+
+2
+00:00:05.000 --> 00:00:08.000
+<v Alice><i>italic words</i></v> plain text <v Bob><c.yellow>colored</c></v>
+`, b.String())
+
+	// The written output parses back to the same voices
+	s2, err := astisub.ReadFromWebVTT(bytes.NewReader(b.Bytes()))
+	require.NoError(t, err)
+	require.Len(t, s2.Items, 2)
+	var voices []string
+	for _, item := range s2.Items {
+		for _, l := range item.Lines {
+			for _, li := range l.Items {
+				voices = append(voices, li.VoiceName)
+			}
+		}
+	}
+	assert.Equal(t, []string{"Alice", "", "Bob", "", "Alice", "Alice", "", "Bob"}, voices)
+}
+
 func TestWebVTTWithTimestampMap(t *testing.T) {
 	testData := `WEBVTT
 	X-TIMESTAMP-MAP=MPEGTS:180000, LOCAL:00:00:00.000
@@ -217,7 +285,7 @@ func TestWebVTTTags(t *testing.T) {
 
 5
 00:05:00.000 --> 00:06:00.000
-<v Joe>Joe says something Bob says something
+<v Joe>Joe says something</v> <v Bob>Bob says something</v>
 
 6
 00:06:00.000 --> 00:07:00.000

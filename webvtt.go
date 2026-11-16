@@ -425,6 +425,12 @@ func parseTextWebVTT(i string, sa *StyleAttributes) (o Line) {
 	// Create tokenizer
 	tr := html.NewTokenizer(strings.NewReader(i))
 
+	// Voice stack: each <v name> start tag pushes its annotation, each </v>
+	// end tag pops it. Text is attributed to the voice on top of the stack,
+	// so nested, unclosed or mismatched voice tags never leak a speaker onto
+	// text that doesn't belong to them.
+	var voices []string
+
 	// Loop
 	for {
 		// Get next tag
@@ -436,6 +442,15 @@ func parseTextWebVTT(i string, sa *StyleAttributes) (o Line) {
 
 		switch t {
 		case html.EndTagToken:
+			if matches := webVTTRegexpTag.FindStringSubmatch(string(tr.Raw())); len(matches) > 4 && matches[2] == "v" {
+				// A </v> end tag closes the current voice span, not a style tag
+				if len(voices) > 0 {
+					voices = voices[:len(voices)-1]
+				} else {
+					log.Printf("astisub: found </v> without matching <v> in %q. Ignore", i)
+				}
+				continue
+			}
 			// Pop the top of stack if we meet end tag
 			if len(sa.WebVTTTags) > 0 {
 				sa.WebVTTTags = sa.WebVTTTags[:len(sa.WebVTTTags)-1]
@@ -455,13 +470,18 @@ func parseTextWebVTT(i string, sa *StyleAttributes) (o Line) {
 				}
 
 				if tagName == "v" {
+					if annotation == "" {
+						// An empty speaker starts an anonymous span: the text
+						// inside belongs to no one, not to the previous speaker
+						log.Printf("astisub: found <v> with empty voice name in %q", i)
+					}
 					if o.VoiceName == "" {
 						// Only get voicename of the first <v> appears in the line
 						o.VoiceName = annotation
-					} else {
-						// TODO: do something with other <v> instead of ignoring
-						log.Printf("astisub: found another voice name %q in %q. Ignore", annotation, i)
 					}
+					// Push the voice on the stack so each following text token
+					// is attributed to this speaker
+					voices = append(voices, annotation)
 					continue
 				}
 
@@ -485,8 +505,17 @@ func parseTextWebVTT(i string, sa *StyleAttributes) (o Line) {
 				styleAttributes.propagateWebVTTAttributes()
 			}
 
+			// The current voice is the one on top of the stack
+			var voice string
+			if len(voices) > 0 {
+				voice = voices[len(voices)-1]
+			}
+
 			// Append items
-			o.Items = append(o.Items, parseTextWebVTTTextToken(styleAttributes, string(tr.Raw()))...)
+			for _, item := range parseTextWebVTTTextToken(styleAttributes, string(tr.Raw())) {
+				item.VoiceName = voice
+				o.Items = append(o.Items, item)
+			}
 		}
 	}
 	return
@@ -720,18 +749,72 @@ func (s Subtitles) WriteToWebVTT(o io.Writer) (err error) {
 }
 
 func (l Line) webVTTBytes() (c []byte) {
-	if l.VoiceName != "" {
-		c = append(c, []byte("<v "+l.VoiceName+">")...)
+	// Figure out whether the items carry several distinct voices. A line
+	// with a single voice keeps the historical output: one opening <v> tag
+	// without a closing tag.
+	var voices []string
+	for _, item := range l.Items {
+		var found bool
+		for _, v := range voices {
+			if v == item.VoiceName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			voices = append(voices, item.VoiceName)
+		}
 	}
+	var multipleVoices = len(voices) > 1
+
+	if !multipleVoices {
+		if l.VoiceName != "" {
+			c = append(c, []byte("<v "+l.VoiceName+">")...)
+		}
+		for idx := 0; idx < len(l.Items); idx++ {
+			var previous, next *LineItem
+			if idx > 0 {
+				previous = &l.Items[idx-1]
+			}
+			if idx < len(l.Items)-1 {
+				next = &l.Items[idx+1]
+			}
+			c = append(c, l.Items[idx].webVTTBytes(previous, next)...)
+		}
+		c = append(c, bytesLineSeparator...)
+		return
+	}
+
+	// Multiple voices: wrap each run of items sharing a voice in its own
+	// <v> span. Items adjacent across a voice boundary are not linked
+	// anymore so their inline tags are fully closed and reopened instead of
+	// overlapping the </v><v> boundary.
+	var currentVoice string
+	var voiceOpen bool
 	for idx := 0; idx < len(l.Items); idx++ {
+		if voice := l.Items[idx].VoiceName; !voiceOpen || voice != currentVoice {
+			if voiceOpen {
+				c = append(c, []byte("</v>")...)
+			}
+			if voice != "" {
+				c = append(c, []byte("<v "+voice+">")...)
+				voiceOpen = true
+			} else {
+				voiceOpen = false
+			}
+			currentVoice = voice
+		}
 		var previous, next *LineItem
-		if idx > 0 {
+		if idx > 0 && l.Items[idx-1].VoiceName == currentVoice {
 			previous = &l.Items[idx-1]
 		}
-		if idx < len(l.Items)-1 {
+		if idx < len(l.Items)-1 && l.Items[idx+1].VoiceName == currentVoice {
 			next = &l.Items[idx+1]
 		}
 		c = append(c, l.Items[idx].webVTTBytes(previous, next)...)
+	}
+	if voiceOpen {
+		c = append(c, []byte("</v>")...)
 	}
 	c = append(c, bytesLineSeparator...)
 	return
