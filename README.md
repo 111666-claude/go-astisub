@@ -7,7 +7,7 @@ This is a Golang library to manipulate subtitles.
 
 It allows you to manipulate `srt`, `stl`, `ttml`, `ssa/ass`, `webvtt` and `teletext` files for now.
 
-Available operations are `parsing`, `writing`, `applying linear correction`, `syncing`, `fragmenting`, `unfragmenting`, `merging` and `optimizing`.
+Available operations are `parsing`, `writing`, `applying linear correction`, `syncing`, `fragmenting`, `unfragmenting`, `merging`, `optimizing` and `readability checks`.
 
 # Installation
 
@@ -50,6 +50,21 @@ s1.ApplyLinearCorrection(1*time.Second, 2*time.Second, 5*time.Second, 7*time.Sec
 s1.Write("/path/to/example.srt")
 var buf = &bytes.Buffer{}
 s2.WriteToTTML(buf)
+
+// Check readability without modifying the subtitles. Zero-valued options
+// fall back to sensible defaults (MaxCPS = 21, MaxLineWidth = 42,
+// OverlapTolerance = 0).
+diags, err := s1.ReadabilityCheck(astisub.ReadabilityOptions{
+    MaxCPS:           21,                  // max visible characters per second
+    MaxLineWidth:     42,                  // max display columns per line
+    OverlapTolerance: 100 * time.Millisecond,
+})
+// Each diagnostic carries the item index, its time range, the violated rule
+// and the measured value, e.g. empty text, non-positive duration,
+// cross-line styling, excessive CPS, excessive line width or overlaps.
+for _, d := range diags {
+    log.Println(d)
+}
 ```
 
 # Using the CLI
@@ -94,6 +109,7 @@ If **astisub** has been installed properly you can:
 - [x] ordering
 - [x] optimizing
 - [x] linear correction
+- [x] readability checks
 - [x] .srt
 - [x] .ttml
 - [x] .vtt
