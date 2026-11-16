@@ -10,15 +10,17 @@ import (
 
 // Flags
 var (
-	actual1          = flag.Duration("a1", 0, "the first actual duration")
-	actual2          = flag.Duration("a2", 0, "the second actual duration")
-	desired1         = flag.Duration("d1", 0, "the first desired duration")
-	desired2         = flag.Duration("d2", 0, "the second desired duration")
-	fragmentDuration = flag.Duration("f", 0, "the fragment duration")
-	inputPath        = astikit.NewFlagStrings()
-	teletextPage     = flag.Int("p", 0, "the teletext page")
-	outputPath       = flag.String("o", "", "the output path")
-	syncDuration     = flag.Duration("s", 0, "the sync duration")
+	actual1              = flag.Duration("a1", 0, "the first actual duration")
+	actual2              = flag.Duration("a2", 0, "the second actual duration")
+	bilingualTolerance   = flag.Duration("t", 0, "the bilingual merge tolerance: items separated by a gap lower than or equal to it are paired")
+	bilingualSecondFirst = flag.Bool("secondary-first", false, "for bilingual merge, write the second track's lines before the first track's")
+	desired1             = flag.Duration("d1", 0, "the first desired duration")
+	desired2             = flag.Duration("d2", 0, "the second desired duration")
+	fragmentDuration     = flag.Duration("f", 0, "the fragment duration")
+	inputPath            = astikit.NewFlagStrings()
+	teletextPage         = flag.Int("p", 0, "the teletext page")
+	outputPath           = flag.String("o", "", "the output path")
+	syncDuration         = flag.Duration("s", 0, "the sync duration")
 )
 
 func main() {
@@ -81,6 +83,34 @@ func main() {
 
 		// Fragment
 		sub.Fragment(*fragmentDuration)
+
+		// Write
+		if err = sub.Write(*outputPath); err != nil {
+			log.Fatalf("%s while writing to %s", err, *outputPath)
+		}
+	case "bilingual-merge":
+		// Validate second input path
+		if len(*inputPath.Slice) == 1 {
+			log.Fatal("Use -i to provide at least two input paths")
+		}
+
+		// Open second input path
+		var sub2 *astisub.Subtitles
+		if sub2, err = astisub.Open(astisub.Options{Filename: (*inputPath.Slice)[1], Teletext: astisub.TeletextOptions{Page: *teletextPage}}); err != nil {
+			log.Fatalf("%s while opening %s", err, (*inputPath.Slice)[1])
+		}
+
+		// Merge bilingually: paired cues become single bilingual cues
+		lineOrder := astisub.BilingualLineOrderPrimaryFirst
+		if *bilingualSecondFirst {
+			lineOrder = astisub.BilingualLineOrderSecondaryFirst
+		}
+		if sub, err = sub.MergeBilingual(sub2, astisub.BilingualMergeOptions{
+			Tolerance: *bilingualTolerance,
+			LineOrder: lineOrder,
+		}); err != nil {
+			log.Fatalf("%s while bilingual merging", err)
+		}
 
 		// Write
 		if err = sub.Write(*outputPath); err != nil {

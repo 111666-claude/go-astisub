@@ -37,6 +37,15 @@ s1.Fragment(2*time.Second)
 // Merge subtitles
 s1.Merge(s2)
 
+// Merge two tracks (e.g. Chinese and English) into bilingual cues. Items whose
+// time ranges overlap, touch or are separated by a gap lower than or equal to
+// the tolerance are paired and combined into a single cue; unmatched items are
+// preserved. A new subtitles object is returned, the two inputs are untouched.
+s3, _ := s1.MergeBilingual(s2, astisub.BilingualMergeOptions{
+    Tolerance: 200 * time.Millisecond,
+    LineOrder: astisub.BilingualLineOrderPrimaryFirst, // or BilingualLineOrderSecondaryFirst
+})
+
 // Optimize subtitles
 s1.Optimize()
 
@@ -71,6 +80,11 @@ If **astisub** has been installed properly you can:
 - merge any type of subtitle into any other type of subtitle:
 
         astisub merge -i example.srt -i example.ttml -o example.out.srt
+
+- merge two tracks into bilingual cues (paired cues become a single cue, use
+  `-t` for the pairing tolerance and `--secondary-first` to reverse line order):
+
+        astisub bilingual-merge -i zh.srt -i en.srt -t 200ms -o example.out.srt
 
 - optimize any type of subtitle:
 
