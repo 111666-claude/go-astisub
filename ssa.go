@@ -121,7 +121,10 @@ const (
 )
 
 // SSA regexp
-var ssaRegexpEffect = regexp.MustCompile(`\{[^\{]+\}`)
+var (
+	ssaRegexpEffect        = regexp.MustCompile(`\{[^\{]+\}`)
+	ssaRegexpKaraokeEffect = regexp.MustCompile(`\\(kf|ko|k)([0-9]+)`)
+)
 
 // ReadFromSSA parses an .ssa content
 func ReadFromSSA(i io.Reader) (o *Subtitles, err error) {
@@ -919,6 +922,9 @@ func newSSAEventFromItem(i Item) (e *ssaEvent) {
 		var items []string
 		for _, item := range l.Items {
 			var s string
+			if item.Karaoke != nil {
+				s += item.Karaoke.ssaString()
+			}
 			if item.InlineStyle != nil && len(item.InlineStyle.SSAEffect) > 0 {
 				s += item.InlineStyle.SSAEffect
 			}
@@ -1087,15 +1093,99 @@ func (e *ssaEvent) item(styles map[string]*Style) (i *Item, err error) {
 			l.Items = append(l.Items, LineItem{Text: s})
 		}
 
+		// Extract karaoke timings
+		l.Items = ssaExtractKaraokeTiming(l.Items, e.end-e.start)
+
 		// Add line
 		i.Lines = append(i.Lines, l)
 	}
 	return
 }
 
+// ssaExtractKaraokeTiming converts the karaoke override tags (\k, \kf and \ko) carried
+// by the inline style effects of the line items into structured Karaoke timings. The
+// tag is removed from the effect, every other tag is left untouched. Timings are
+// relative to the item's start and clamped to its duration d: syllables cumulating
+// past it are capped. Karaoke tags with an invalid duration (e.g. \k-5) don't match
+// and are therefore kept as ordinary effects. Items without karaoke tags are returned
+// unchanged.
+func ssaExtractKaraokeTiming(items []LineItem, d time.Duration) []LineItem {
+	// No karaoke tag
+	var found bool
+	for _, i := range items {
+		if i.InlineStyle != nil && ssaRegexpKaraokeEffect.MatchString(i.InlineStyle.SSAEffect) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return items
+	}
+
+	// Loop through items
+	var startAt time.Duration
+	for idx := range items {
+		var i = &items[idx]
+		if i.InlineStyle == nil {
+			continue
+		}
+		var m = ssaRegexpKaraokeEffect.FindStringSubmatchIndex(i.InlineStyle.SSAEffect)
+		if m == nil {
+			continue
+		}
+
+		// Parse the duration in centiseconds
+		var cs, err = strconv.Atoi(i.InlineStyle.SSAEffect[m[4]:m[5]])
+		if err != nil {
+			continue
+		}
+		var endAt = startAt + time.Duration(cs)*10*time.Millisecond
+
+		// Set karaoke timing, clamped to the item's duration
+		var s, e = startAt, endAt
+		if s > d {
+			s = d
+		}
+		if e > d {
+			e = d
+		}
+		i.Karaoke = &Karaoke{
+			Effect:  i.InlineStyle.SSAEffect[m[2]:m[3]],
+			StartAt: s,
+			EndAt:   e,
+		}
+		startAt = endAt
+
+		// Remove the karaoke tag from the effect, keep everything else
+		var effect = i.InlineStyle.SSAEffect[:m[0]] + i.InlineStyle.SSAEffect[m[1]:]
+		if len(strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(effect, "{"), "}"))) == 0 {
+			i.InlineStyle = nil
+		} else {
+			i.InlineStyle.SSAEffect = effect
+		}
+	}
+	return items
+}
+
 // formatDurationSSA formats an .ssa duration
 func formatDurationSSA(i time.Duration) string {
 	return formatDuration(i, ".", 2)
+}
+
+// ssaString returns the karaoke timing as an SSA override tag, the duration being
+// expressed in centiseconds. An unknown effect is written as \k.
+func (k Karaoke) ssaString() string {
+	var effect = k.Effect
+	switch effect {
+	case KaraokeEffectK, KaraokeEffectKF, KaraokeEffectKO:
+	default:
+		effect = KaraokeEffectK
+	}
+	var d = k.EndAt - k.StartAt
+	if d < 0 {
+		d = 0
+	}
+	return fmt.Sprintf("{\\%s%d}", effect, d.Round(10*time.Millisecond)/(10*time.Millisecond))
 }
 
 // string returns the block as a string

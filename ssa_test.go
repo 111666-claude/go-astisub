@@ -163,3 +163,100 @@ Dialogue: 0,0:00:01.00,0:00:03.50,Default,,0,0,0,,Hello {\i1}world{\i0}!`)))
 	assert.NoError(t, s.WriteToSSA(w))
 	assert.Contains(t, w.String(), `,Hello {\i1}world{\i0}!`)
 }
+
+func TestSSAKaraoke(t *testing.T) {
+	// Read multi word, multi line and mixed \k, \kf and \ko samples
+	s, err := astisub.ReadFromSSA(bytes.NewReader([]byte(`[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,{\k50}Hello {\kf100}beautiful {\ko80}world
+Dialogue: 0,0:00:05.00,0:00:08.00,Default,,0,0,0,,{\k40}first\N{\k60}second
+Dialogue: 0,0:00:09.00,0:00:10.00,Default,,0,0,0,,No karaoke`)))
+	assert.NoError(t, err)
+	assert.Len(t, s.Items, 3)
+
+	// Timings are relative to the item's start
+	assert.Equal(t, []astisub.Line{{Items: []astisub.LineItem{
+		{Karaoke: &astisub.Karaoke{Effect: astisub.KaraokeEffectK, StartAt: 0, EndAt: 500 * time.Millisecond}, Text: "Hello "},
+		{Karaoke: &astisub.Karaoke{Effect: astisub.KaraokeEffectKF, StartAt: 500 * time.Millisecond, EndAt: 1500 * time.Millisecond}, Text: "beautiful "},
+		{Karaoke: &astisub.Karaoke{Effect: astisub.KaraokeEffectKO, StartAt: 1500 * time.Millisecond, EndAt: 2300 * time.Millisecond}, Text: "world"},
+	}}}, s.Items[0].Lines)
+
+	// Each line gets its own timing
+	assert.Equal(t, []astisub.Line{
+		{Items: []astisub.LineItem{{Karaoke: &astisub.Karaoke{Effect: astisub.KaraokeEffectK, StartAt: 0, EndAt: 400 * time.Millisecond}, Text: "first"}}},
+		{Items: []astisub.LineItem{{Karaoke: &astisub.Karaoke{Effect: astisub.KaraokeEffectK, StartAt: 0, EndAt: 600 * time.Millisecond}, Text: "second"}}},
+	}, s.Items[1].Lines)
+
+	// No karaoke
+	assert.Equal(t, []astisub.Line{{Items: []astisub.LineItem{{Text: "No karaoke"}}}}, s.Items[2].Lines)
+
+	// Write
+	w := &bytes.Buffer{}
+	assert.NoError(t, s.WriteToSSA(w))
+	assert.Contains(t, w.String(), `,{\k50}Hello {\kf100}beautiful {\ko80}world`)
+	assert.Contains(t, w.String(), `,{\k40}first\N{\k60}second`)
+	assert.Contains(t, w.String(), `,No karaoke`)
+
+	// Read back
+	s2, err := astisub.ReadFromSSA(bytes.NewReader(w.Bytes()))
+	assert.NoError(t, err)
+	assert.Len(t, s2.Items, len(s.Items))
+	for idx := range s.Items {
+		assert.Equal(t, s.Items[idx].StartAt, s2.Items[idx].StartAt)
+		assert.Equal(t, s.Items[idx].EndAt, s2.Items[idx].EndAt)
+		assert.Equal(t, s.Items[idx].Lines, s2.Items[idx].Lines)
+	}
+}
+
+func TestSSAKaraokeWithOtherTags(t *testing.T) {
+	// Karaoke tags mixed with other tags, consecutive tags and escaped characters
+	s, err := astisub.ReadFromSSA(bytes.NewReader([]byte(`[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\k50\b1}foo{\b0}{\k30}bar\h baz`)))
+	assert.NoError(t, err)
+	assert.Equal(t, []astisub.Line{{Items: []astisub.LineItem{
+		{InlineStyle: &astisub.StyleAttributes{SSAEffect: `{\b1}`}, Karaoke: &astisub.Karaoke{Effect: astisub.KaraokeEffectK, StartAt: 0, EndAt: 500 * time.Millisecond}, Text: "foo"},
+		{InlineStyle: &astisub.StyleAttributes{SSAEffect: `{\b0}`}, Text: ""},
+		{Karaoke: &astisub.Karaoke{Effect: astisub.KaraokeEffectK, StartAt: 500 * time.Millisecond, EndAt: 800 * time.Millisecond}, Text: `bar\h baz`},
+	}}}, s.Items[0].Lines)
+
+	// Non karaoke tags and escaped characters are preserved
+	w := &bytes.Buffer{}
+	assert.NoError(t, s.WriteToSSA(w))
+	assert.Contains(t, w.String(), `,{\k50}{\b1}foo{\b0}{\k30}bar\h baz`)
+}
+
+func TestSSAKaraokeEdgeCases(t *testing.T) {
+	// Invalid durations, cumulated length overflowing the item's end and empty syllables
+	s, err := astisub.ReadFromSSA(bytes.NewReader([]byte(`[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\k-5}foo{\k}bar
+Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,{\k50}foo{\k200}bar
+Dialogue: 0,0:00:05.00,0:00:07.00,Default,,0,0,0,,{\k50}{\k70}foo`)))
+	assert.NoError(t, err)
+
+	// Invalid durations are left untouched
+	assert.Equal(t, []astisub.Line{{Items: []astisub.LineItem{
+		{InlineStyle: &astisub.StyleAttributes{SSAEffect: `{\k-5}`}, Text: "foo"},
+		{InlineStyle: &astisub.StyleAttributes{SSAEffect: `{\k}`}, Text: "bar"},
+	}}}, s.Items[0].Lines)
+
+	// Syllables cumulating past the item's end are clamped to its duration
+	assert.Equal(t, []astisub.Line{{Items: []astisub.LineItem{
+		{Karaoke: &astisub.Karaoke{Effect: astisub.KaraokeEffectK, StartAt: 0, EndAt: 500 * time.Millisecond}, Text: "foo"},
+		{Karaoke: &astisub.Karaoke{Effect: astisub.KaraokeEffectK, StartAt: 500 * time.Millisecond, EndAt: time.Second}, Text: "bar"},
+	}}}, s.Items[1].Lines)
+
+	// Empty syllables are kept and still consume their duration
+	assert.Equal(t, []astisub.Line{{Items: []astisub.LineItem{
+		{Karaoke: &astisub.Karaoke{Effect: astisub.KaraokeEffectK, StartAt: 0, EndAt: 500 * time.Millisecond}, Text: ""},
+		{Karaoke: &astisub.Karaoke{Effect: astisub.KaraokeEffectK, StartAt: 500 * time.Millisecond, EndAt: 1200 * time.Millisecond}, Text: "foo"},
+	}}}, s.Items[2].Lines)
+
+	// Write
+	w := &bytes.Buffer{}
+	assert.NoError(t, s.WriteToSSA(w))
+	assert.Contains(t, w.String(), `,{\k-5}foo{\k}bar`)
+	assert.Contains(t, w.String(), `,{\k50}foo{\k50}bar`)
+	assert.Contains(t, w.String(), `,{\k50}{\k70}foo`)
+}

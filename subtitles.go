@@ -844,9 +844,26 @@ func (l Line) String() string {
 	return strings.Join(texts, "")
 }
 
+// Karaoke effects
+const (
+	KaraokeEffectK  = "k"  // the syllable is filled instantly
+	KaraokeEffectKF = "kf" // the syllable is filled progressively from left to right
+	KaraokeEffectKO = "ko" // the syllable's outline is highlighted
+)
+
+// Karaoke represents the karaoke timing of a line item, as carried by the \k, \kf and
+// \ko SSA override tags. StartAt and EndAt are relative to the start of the item the
+// line belongs to and are clamped to the item's duration.
+type Karaoke struct {
+	Effect  string
+	StartAt time.Duration
+	EndAt   time.Duration
+}
+
 // LineItem represents a formatted line item
 type LineItem struct {
 	InlineStyle *StyleAttributes
+	Karaoke     *Karaoke
 	StartAt     time.Duration
 	Style       *Style
 	Text        string
