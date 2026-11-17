@@ -206,6 +206,16 @@ func (i *TTMLInItems) UnmarshalXML(d *xml.Decoder, start xml.StartElement) (err 
 
 		// Start element
 		if se, ok := t.(xml.StartElement); ok {
+			// A ruby container needs a custom token-stream decode because its
+			// "rb"/"rt" children are interleaved siblings.
+			if se.Name.Local == "ruby" {
+				var e TTMLInItem
+				if e, err = decodeTTMLInRuby(d, se); err != nil {
+					return
+				}
+				*i = append(*i, e)
+				continue
+			}
 			var e = TTMLInItem{}
 			if err = d.DecodeElement(&e, &se); err != nil {
 				err = fmt.Errorf("astisub: decoding xml.StartElement failed: %w", err)
@@ -262,8 +272,189 @@ func newTTMLXmlDecoder(s string) *xml.Decoder {
 type TTMLInItem struct {
 	Style string `xml:"style,attr,omitempty"`
 	Text  string `xml:",chardata"`
+	// Ruby is populated only when the item is a "ruby" container. The custom
+	// TTMLInItems unmarshaler detects the container and decodes the ordered
+	// base/annotation pairs itself since their interleaved "rb"/"rt" siblings
+	// cannot be described with struct tags.
+	Ruby []TTMLInRubyPair
 	TTMLInStyleAttributes
 	XMLName xml.Name
+}
+
+// TTMLInRubyComponent represents a "rb" (base) or "rt" (annotation) element of
+// a ruby container
+type TTMLInRubyComponent struct {
+	Style string `xml:"style,attr,omitempty"`
+	Text  string `xml:",chardata"`
+	TTMLInStyleAttributes
+}
+
+// TTMLInRubyPair associates a ruby base with its reading. Either component may
+// be nil when the container is missing the corresponding element.
+type TTMLInRubyPair struct {
+	Base *TTMLInRubyComponent
+	Text *TTMLInRubyComponent
+}
+
+// decodeTTMLInRuby decodes a "ruby" container by walking its token stream.
+//
+// "rb" and "rt" siblings are interleaved, so each "rb" opens a new pair and a
+// following "rt" attaches to it. An "rt" without a pending base is kept as a
+// base-less pair (orphan annotation), while unknown children ("rtc", nested
+// "ruby", a "span" inside "rb", ...) are skipped entirely: their content is
+// ambiguous and re-emitting it would break the base/annotation pairing.
+// Invalid XML surfaces as an error instead of a truncated container.
+func decodeTTMLInRuby(d *xml.Decoder, start xml.StartElement) (item TTMLInItem, err error) {
+	item.XMLName = start.Name
+	if item.TTMLInStyleAttributes, err = startTTMLInStyleAttributes(start); err != nil {
+		err = fmt.Errorf("astisub: decoding ruby container attributes failed: %w", err)
+		return
+	}
+	for _, attr := range start.Attr {
+		if attr.Name.Local == "style" {
+			item.Style = attr.Value
+		}
+	}
+
+	for {
+		var t xml.Token
+		if t, err = d.Token(); err != nil {
+			err = fmt.Errorf("astisub: decoding ruby container failed: %w", err)
+			return
+		}
+		switch tok := t.(type) {
+		case xml.StartElement:
+			switch tok.Name.Local {
+			case "rb":
+				var c TTMLInRubyComponent
+				if err = d.DecodeElement(&c, &tok); err != nil {
+					err = fmt.Errorf("astisub: decoding ruby base failed: %w", err)
+					return
+				}
+				// An "rb" always starts a new pair, even when its text is
+				// empty (empty base is preserved as an empty component).
+				item.Ruby = append(item.Ruby, TTMLInRubyPair{Base: &c})
+			case "rt":
+				var c TTMLInRubyComponent
+				if err = d.DecodeElement(&c, &tok); err != nil {
+					err = fmt.Errorf("astisub: decoding ruby text failed: %w", err)
+					return
+				}
+				// Attach to the pending base when the last pair is base-only.
+				if n := len(item.Ruby); n > 0 && item.Ruby[n-1].Base != nil && item.Ruby[n-1].Text == nil {
+					item.Ruby[n-1].Text = &c
+				} else {
+					// Orphan "rt": no pending base to annotate.
+					item.Ruby = append(item.Ruby, TTMLInRubyPair{Text: &c})
+				}
+			default:
+				// Unknown role ("rtc", nested "ruby", ...): discard the whole
+				// subtree rather than guessing how to pair its content.
+				if err = d.Skip(); err != nil {
+					err = fmt.Errorf("astisub: skipping unknown ruby child %q failed: %w", tok.Name.Local, err)
+					return
+				}
+			}
+		case xml.EndElement:
+			if tok.Name.Local == "ruby" {
+				return
+			}
+		}
+	}
+}
+
+// startTTMLInStyleAttributes extracts the supported styling attributes of a
+// start element into a TTMLInStyleAttributes. Like the struct-tag unmarshaler
+// used for regular spans, attributes are matched on their local name whatever
+// their namespace (so "tts:color" matches a "color" field); only namespace
+// declarations themselves are skipped.
+func startTTMLInStyleAttributes(start xml.StartElement) (TTMLInStyleAttributes, error) {
+	var a TTMLInStyleAttributes
+	for _, attr := range start.Attr {
+		if attr.Name.Space == "xmlns" || (attr.Name.Space == "" && attr.Name.Local == "xmlns") {
+			continue
+		}
+		switch attr.Name.Local {
+		case "backgroundColor":
+			v := attr.Value
+			a.BackgroundColor = &v
+		case "color":
+			v := attr.Value
+			a.Color = &v
+		case "direction":
+			v := attr.Value
+			a.Direction = &v
+		case "display":
+			v := attr.Value
+			a.Display = &v
+		case "displayAlign":
+			v := attr.Value
+			a.DisplayAlign = &v
+		case "extent":
+			v := attr.Value
+			a.Extent = &v
+		case "fontFamily":
+			v := attr.Value
+			a.FontFamily = &v
+		case "fontSize":
+			v := attr.Value
+			a.FontSize = &v
+		case "fontStyle":
+			v := attr.Value
+			a.FontStyle = &v
+		case "fontWeight":
+			v := attr.Value
+			a.FontWeight = &v
+		case "lineHeight":
+			v := attr.Value
+			a.LineHeight = &v
+		case "opacity":
+			v := attr.Value
+			a.Opacity = &v
+		case "origin":
+			v := attr.Value
+			a.Origin = &v
+		case "overflow":
+			v := attr.Value
+			a.Overflow = &v
+		case "padding":
+			v := attr.Value
+			a.Padding = &v
+		case "showBackground":
+			v := attr.Value
+			a.ShowBackground = &v
+		case "textAlign":
+			v := attr.Value
+			a.TextAlign = &v
+		case "textDecoration":
+			v := attr.Value
+			a.TextDecoration = &v
+		case "textOutline":
+			v := attr.Value
+			a.TextOutline = &v
+		case "unicodeBidi":
+			v := attr.Value
+			a.UnicodeBidi = &v
+		case "visibility":
+			v := attr.Value
+			a.Visibility = &v
+		case "wrapOption":
+			v := attr.Value
+			a.WrapOption = &v
+		case "writingMode":
+			v := attr.Value
+			a.WritingMode = &v
+		case "zIndex":
+			// An invalid integer is rejected like the struct-tag decoding
+			// used for regular spans does with *int attributes.
+			v, err := strconv.Atoi(attr.Value)
+			if err != nil {
+				return a, fmt.Errorf("astisub: invalid zIndex %q: %w", attr.Value, err)
+			}
+			a.ZIndex = &v
+		}
+	}
+	return a, nil
 }
 
 // TTMLInDuration represents an input TTML duration
@@ -488,6 +679,39 @@ func ReadFromTTML(i io.Reader) (o *Subtitles, err error) {
 					continue
 				}
 
+				// Ruby container: keep the ordered base/annotation pairs as a
+				// single line item. A "br" cannot appear inside a ruby
+				// container so it never introduces an extra line here.
+				if tt.XMLName.Local == "ruby" {
+					var lineItem = LineItem{
+						InlineStyle: tt.TTMLInStyleAttributes.styleAttributes(),
+						Ruby:        make([]TTMLRubyPair, 0, len(tt.Ruby)),
+					}
+					if len(tt.Style) > 0 {
+						if _, ok := o.Styles[tt.Style]; !ok {
+							err = fmt.Errorf("astisub: Style %s requested by ruby container doesn't exist", tt.Style)
+							return
+						}
+						lineItem.Style = o.Styles[tt.Style]
+					}
+					for _, pair := range tt.Ruby {
+						var p = TTMLRubyPair{}
+						if pair.Base != nil {
+							if p.Base, err = ttmlRubyComponentFromIn(pair.Base, o.Styles); err != nil {
+								return
+							}
+						}
+						if pair.Text != nil {
+							if p.Text, err = ttmlRubyComponentFromIn(pair.Text, o.Styles); err != nil {
+								return
+							}
+						}
+						lineItem.Ruby = append(lineItem.Ruby, p)
+					}
+					l.Items = append(l.Items, lineItem)
+					continue
+				}
+
 				// New line decoded as a line break. This can happen if there's a "br" tag within the text since
 				// since the go xml unmarshaler will unmarshal a "br" tag as a line break if the field has the
 				// chardata xml tag.
@@ -525,6 +749,23 @@ func ReadFromTTML(i io.Reader) (o *Subtitles, err error) {
 		}
 	}
 	return
+}
+
+// ttmlRubyComponentFromIn converts an input ruby base/annotation into the
+// domain model, resolving its referenced style like regular span items do.
+func ttmlRubyComponentFromIn(c *TTMLInRubyComponent, styles map[string]*Style) (*TTMLRubyComponent, error) {
+	var out = &TTMLRubyComponent{
+		InlineStyle: c.TTMLInStyleAttributes.styleAttributes(),
+		Text:        c.Text,
+	}
+	if len(c.Style) > 0 {
+		style, ok := styles[c.Style]
+		if !ok {
+			return nil, fmt.Errorf("astisub: Style %s requested by ruby component with text %s doesn't exist", c.Style, c.Text)
+		}
+		out.Style = style
+	}
+	return out, nil
 }
 
 // TTMLOut represents an output TTML that must be marshaled
@@ -616,6 +857,18 @@ func ttmlOutStyleAttributesFromStyleAttributes(s *StyleAttributes) TTMLOutStyleA
 	}
 }
 
+// ttmlOutRubyComponent converts a domain ruby component into its output form
+func ttmlOutRubyComponent(c *TTMLRubyComponent) *TTMLOutRubyComponent {
+	var out = &TTMLOutRubyComponent{
+		Text:                   c.Text,
+		TTMLOutStyleAttributes: ttmlOutStyleAttributesFromStyleAttributes(c.InlineStyle),
+	}
+	if c.Style != nil {
+		out.Style = c.Style.ID
+	}
+	return out
+}
+
 // TTMLOutHeader represents an output TTML header
 type TTMLOutHeader struct {
 	ID    string `xml:"xml:id,attr,omitempty"`
@@ -646,12 +899,165 @@ type TTMLOutSubtitle struct {
 	TTMLOutStyleAttributes
 }
 
+// TTMLOutRubyComponent represents an output ruby base ("rb") or annotation
+// ("rt") element
+type TTMLOutRubyComponent struct {
+	Style string `xml:"style,attr,omitempty"`
+	Text  string `xml:",chardata"`
+	TTMLOutStyleAttributes
+}
+
+// MarshalXML emits the component under the element name selected by its parent
+// pair ("rb" or "rt"). The start element provided by the encoder carries no
+// attributes, so they are added here.
+func (c TTMLOutRubyComponent) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	if c.Style != "" {
+		start.Attr = append(start.Attr, xml.Attr{Name: xml.Name{Local: "style"}, Value: c.Style})
+	}
+	start.Attr = append(start.Attr, ttmlOutStyleAttributesTokens(c.TTMLOutStyleAttributes)...)
+	if err := e.EncodeToken(start); err != nil {
+		return err
+	}
+	if c.Text != "" {
+		if err := e.EncodeToken(xml.CharData([]byte(c.Text))); err != nil {
+			return err
+		}
+	}
+	return e.EncodeToken(start.End())
+}
+
+// TTMLOutRubyPair associates an output ruby base with its annotation
+type TTMLOutRubyPair struct {
+	Base *TTMLOutRubyComponent `xml:"rb"`
+	Text *TTMLOutRubyComponent `xml:"rt,omitempty"`
+}
+
 // TTMLOutItem represents an output TTML Item
 type TTMLOutItem struct {
 	Style string `xml:"style,attr,omitempty"`
 	Text  string `xml:",chardata"`
+	// Ruby holds the pairs of a ruby container. When set, the item marshals as
+	// a "ruby" element and Text is ignored; otherwise it marshals as before.
+	Ruby []TTMLOutRubyPair `xml:"-"`
 	TTMLOutStyleAttributes
 	XMLName xml.Name
+}
+
+// ttmlOutItemAlias is an alias without MarshalXML so plain (non-ruby) items
+// keep using the default struct-tag encoding, preserving their exact output.
+type ttmlOutItemAlias TTMLOutItem
+
+// MarshalXML renders a plain item through the default encoder and a ruby
+// container by emitting its ordered "rb"/"rt" children itself.
+func (i TTMLOutItem) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	start.Name = i.XMLName
+	if len(i.Ruby) == 0 {
+		return e.EncodeElement(ttmlOutItemAlias(i), start)
+	}
+	if i.Style != "" {
+		start.Attr = append(start.Attr, xml.Attr{Name: xml.Name{Local: "style"}, Value: i.Style})
+	}
+	start.Attr = append(start.Attr, ttmlOutStyleAttributesTokens(i.TTMLOutStyleAttributes)...)
+	if err := e.EncodeToken(start); err != nil {
+		return err
+	}
+	for _, pair := range i.Ruby {
+		if pair.Base != nil {
+			if err := e.EncodeElement(*pair.Base, xml.StartElement{Name: xml.Name{Local: "rb"}}); err != nil {
+				return err
+			}
+		}
+		if pair.Text != nil {
+			if err := e.EncodeElement(*pair.Text, xml.StartElement{Name: xml.Name{Local: "rt"}}); err != nil {
+				return err
+			}
+		}
+	}
+	return e.EncodeToken(start.End())
+}
+
+// ttmlOutStyleAttributesTokens converts the supported output style attributes
+// into encoder tokens. Only set attributes are emitted, matching the
+// "omitempty" behavior of the struct-tag encoder.
+func ttmlOutStyleAttributesTokens(s TTMLOutStyleAttributes) (attrs []xml.Attr) {
+	add := func(local, value string) {
+		if value != "" {
+			attrs = append(attrs, xml.Attr{Name: xml.Name{Local: "tts:" + local}, Value: value})
+		}
+	}
+	if s.BackgroundColor != nil {
+		add("backgroundColor", *s.BackgroundColor)
+	}
+	if s.Color != nil {
+		add("color", *s.Color)
+	}
+	if s.Direction != nil {
+		add("direction", *s.Direction)
+	}
+	if s.Display != nil {
+		add("display", *s.Display)
+	}
+	if s.DisplayAlign != nil {
+		add("displayAlign", *s.DisplayAlign)
+	}
+	if s.Extent != nil {
+		add("extent", *s.Extent)
+	}
+	if s.FontFamily != nil {
+		add("fontFamily", *s.FontFamily)
+	}
+	if s.FontSize != nil {
+		add("fontSize", *s.FontSize)
+	}
+	if s.FontStyle != nil {
+		add("fontStyle", *s.FontStyle)
+	}
+	if s.FontWeight != nil {
+		add("fontWeight", *s.FontWeight)
+	}
+	if s.LineHeight != nil {
+		add("lineHeight", *s.LineHeight)
+	}
+	if s.Opacity != nil {
+		add("opacity", *s.Opacity)
+	}
+	if s.Origin != nil {
+		add("origin", *s.Origin)
+	}
+	if s.Overflow != nil {
+		add("overflow", *s.Overflow)
+	}
+	if s.Padding != nil {
+		add("padding", *s.Padding)
+	}
+	if s.ShowBackground != nil {
+		add("showBackground", *s.ShowBackground)
+	}
+	if s.TextAlign != nil {
+		add("textAlign", *s.TextAlign)
+	}
+	if s.TextDecoration != nil {
+		add("textDecoration", *s.TextDecoration)
+	}
+	if s.TextOutline != nil {
+		add("textOutline", *s.TextOutline)
+	}
+	if s.UnicodeBidi != nil {
+		add("unicodeBidi", *s.UnicodeBidi)
+	}
+	if s.Visibility != nil {
+		add("visibility", *s.Visibility)
+	}
+	if s.WrapOption != nil {
+		add("wrapOption", *s.WrapOption)
+	}
+	if s.WritingMode != nil {
+		add("writingMode", *s.WritingMode)
+	}
+	if s.ZIndex != nil {
+		attrs = append(attrs, xml.Attr{Name: xml.Name{Local: "tts:zIndex"}, Value: strconv.Itoa(*s.ZIndex)})
+	}
+	return
 }
 
 // TTMLOutDuration represents an output TTML duration
@@ -766,6 +1172,35 @@ func (s Subtitles) WriteToTTML(o io.Writer, opts ...WriteToTTMLOption) (err erro
 		for _, line := range item.Lines {
 			// Loop through line items
 			for _, lineItem := range line.Items {
+				// Ruby container: write its ordered base/annotation pairs
+				if len(lineItem.Ruby) > 0 {
+					var ttmlItem = TTMLOutItem{
+						TTMLOutStyleAttributes: ttmlOutStyleAttributesFromStyleAttributes(lineItem.InlineStyle),
+						XMLName:                xml.Name{Local: "ruby"},
+						Ruby:                   make([]TTMLOutRubyPair, 0, len(lineItem.Ruby)),
+					}
+
+					// Add style
+					if lineItem.Style != nil {
+						ttmlItem.Style = lineItem.Style.ID
+					}
+
+					for _, pair := range lineItem.Ruby {
+						var p TTMLOutRubyPair
+						if pair.Base != nil {
+							p.Base = ttmlOutRubyComponent(pair.Base)
+						}
+						if pair.Text != nil {
+							p.Text = ttmlOutRubyComponent(pair.Text)
+						}
+						ttmlItem.Ruby = append(ttmlItem.Ruby, p)
+					}
+
+					// Add ttml item
+					ttmlSubtitle.Items = append(ttmlSubtitle.Items, ttmlItem)
+					continue
+				}
+
 				// Init ttml item
 				var ttmlItem = TTMLOutItem{
 					Text:                   lineItem.Text,

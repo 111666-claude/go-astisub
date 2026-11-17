@@ -1,0 +1,48 @@
+<tt xmlns="http://www.w3.org/ns/ttml" xml:lang="ja" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:tts="http://www.w3.org/ns/ttml#styling">
+    <head>
+        <metadata>
+            <ttm:title>Ruby test</ttm:title>
+        </metadata>
+        <styling>
+            <style xml:id="rubyBase" tts:fontWeight="bold"></style>
+            <style xml:id="rubyText" tts:color="#888888" tts:fontSize="75%"></style>
+        </styling>
+        <layout></layout>
+    </head>
+    <body>
+        <div>
+            <p begin="00:00:01.000" end="00:00:03.500">
+                <span>それは</span>
+                <ruby style="rubyBase">
+                    <rb style="rubyBase">漢字</rb>
+                    <rt style="rubyText" tts:color="#ff0000">かんじ</rt>
+                    <rb>と</rb>
+                    <rt>と</rt>
+                </ruby>
+                <span>です。</span>
+                <br></br>
+                <ruby>
+                    <rb>日</rb>
+                    <rt>に</rt>
+                    <rb>本</rb>
+                    <rt>ほん</rt>
+                </ruby>
+            </p>
+            <p begin="00:00:04.000" end="00:00:05.000">
+                <ruby tts:zIndex="2">
+                    <rb></rb>
+                    <rt>から</rt>
+                    <rb>ABCD</rb>
+                    <rt>エックス</rt>
+                    <rb>音</rb>
+                    <rt>おと</rt>
+                    <rb>last</rb>
+                </ruby>
+                <span>orphan</span>
+            </p>
+            <p begin="00:00:06.000" end="00:00:07.000">
+                <span tts:color="#008000">普通の字幕</span>
+            </p>
+        </div>
+    </body>
+</tt>

@@ -844,12 +844,37 @@ func (l Line) String() string {
 	return strings.Join(texts, "")
 }
 
+// TTMLRubyComponent represents either the base text ("rb") or the annotation
+// text ("rt") of a TTML ruby pair. Both keep their own style so ruby
+// annotations can be rendered differently from the base text they annotate.
+type TTMLRubyComponent struct {
+	InlineStyle *StyleAttributes
+	Style       *Style
+	Text        string
+}
+
+// TTMLRubyPair associates a ruby base with its reading. Text may be nil when
+// the source ruby container only provides a base ("rb" without a following
+// "rt"), and Base may be nil for an orphan annotation ("rt" with no preceding
+// "rb"). Pairs stay ordered so several annotations inside one ruby container
+// are written back in their original sequence.
+type TTMLRubyPair struct {
+	Base *TTMLRubyComponent
+	Text *TTMLRubyComponent
+}
+
 // LineItem represents a formatted line item
 type LineItem struct {
 	InlineStyle *StyleAttributes
 	StartAt     time.Duration
 	Style       *Style
 	Text        string
+
+	// Ruby holds the ordered base/annotation pairs of a TTML ruby container
+	// ("ruby" element). It is only populated for items decoded from a ruby
+	// container; Text stays empty for such items. Other formats only use Text,
+	// so non-TTML readers and writers are unaffected.
+	Ruby []TTMLRubyPair
 }
 
 // Add adds a duration to each time boundaries. As in the time package, duration can be negative.
@@ -1023,6 +1048,16 @@ func (s *Subtitles) removeUnusedRegionsAndStyles() {
 				// Add style
 				if lineItem.Style != nil {
 					usedStyles[lineItem.Style.ID] = true
+				}
+
+				// Add styles referenced by ruby components
+				for _, pair := range lineItem.Ruby {
+					if pair.Base != nil && pair.Base.Style != nil {
+						usedStyles[pair.Base.Style.ID] = true
+					}
+					if pair.Text != nil && pair.Text.Style != nil {
+						usedStyles[pair.Text.Style.ID] = true
+					}
 				}
 			}
 		}
