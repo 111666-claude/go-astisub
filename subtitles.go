@@ -810,7 +810,9 @@ type Metadata struct {
 	STLTranslatorContactDetails                         string
 	STLTranslatorName                                   string
 	Title                                               string
+	TTMLCellResolution                                  string
 	TTMLCopyright                                       string
+	TTMLRootExtent                                      string
 	WebVTTTimestampMap                                  *WebVTTTimestampMap
 }
 

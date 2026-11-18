@@ -61,22 +61,26 @@ type TTMLInBody struct {
 // TTMLIn represents an input TTML that must be unmarshaled
 // We split it from the output TTML as we can't add strict namespace without breaking retrocompatibility
 type TTMLIn struct {
-	Framerate int            `xml:"frameRate,attr"`
-	Lang      string         `xml:"lang,attr"`
-	Metadata  TTMLInMetadata `xml:"head>metadata"`
-	Regions   []TTMLInRegion `xml:"head>layout>region"`
-	Styles    []TTMLInStyle  `xml:"head>styling>style"`
-	Body      TTMLInBody     `xml:"body"`
-	Tickrate  int            `xml:"tickRate,attr"`
-	XMLName   xml.Name       `xml:"tt"`
+	CellResolution string         `xml:"cellResolution,attr"`
+	Extent         string         `xml:"extent,attr"`
+	Framerate      int            `xml:"frameRate,attr"`
+	Lang           string         `xml:"lang,attr"`
+	Metadata       TTMLInMetadata `xml:"head>metadata"`
+	Regions        []TTMLInRegion `xml:"head>layout>region"`
+	Styles         []TTMLInStyle  `xml:"head>styling>style"`
+	Body           TTMLInBody     `xml:"body"`
+	Tickrate       int            `xml:"tickRate,attr"`
+	XMLName        xml.Name       `xml:"tt"`
 }
 
 // metadata returns the Metadata of the TTML
 func (t TTMLIn) metadata() (m *Metadata) {
 	m = &Metadata{
-		Framerate:     t.Framerate,
-		Title:         t.Metadata.Title,
-		TTMLCopyright: t.Metadata.Copyright,
+		Framerate:          t.Framerate,
+		Title:              t.Metadata.Title,
+		TTMLCellResolution: t.CellResolution,
+		TTMLCopyright:      t.Metadata.Copyright,
+		TTMLRootExtent:     t.Extent,
 	}
 	if v, ok := ttmlLanguageMapping.Get(astikit.StrPad(t.Lang, ' ', 2, astikit.PadCut)); ok {
 		m.Language = v.(string)
